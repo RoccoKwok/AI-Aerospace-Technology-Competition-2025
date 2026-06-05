@@ -1,0 +1,222 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd">
+<html>
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+  <meta http-equiv="Content-Style-Type" content="text/css">
+  <title></title>
+  <meta name="Generator" content="Cocoa HTML Writer">
+  <meta name="CocoaVersion" content="2575.7">
+  <style type="text/css">
+    p.p1 {margin: 0.0px 0.0px 0.0px 36.0px; text-indent: -36.0px; font: 12.0px Times; -webkit-text-stroke: #000000}
+    p.p2 {margin: 0.0px 0.0px 0.0px 36.0px; text-indent: -36.0px; font: 12.0px Times; -webkit-text-stroke: #000000; min-height: 14.0px}
+    span.s1 {font-kerning: none}
+  </style>
+</head>
+<body>
+<p class="p1"><span class="s1">import numpy as np</span></p>
+<p class="p1"><span class="s1">import pandas as pd</span></p>
+<p class="p1"><span class="s1">from sklearn.model_selection import train_test_split</span></p>
+<p class="p1"><span class="s1">from sklearn.tree import DecisionTreeClassifier</span></p>
+<p class="p1"><span class="s1">from sklearn.metrics import accuracy_score, classification_report</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"># ===========================================</span></p>
+<p class="p1"><span class="s1"># 0) Load data</span></p>
+<p class="p1"><span class="s1"># ===========================================</span></p>
+<p class="p1"><span class="s1"># Expected columns (adjust to your dataset):</span></p>
+<p class="p1"><span class="s1"># - koi_srad: stellar radius (in solar radii)</span></p>
+<p class="p1"><span class="s1"># - koi_steff: stellar effective temperature (K)</span></p>
+<p class="p1"><span class="s1"># - koi_sma: orbital semi-major axis (AU)</span></p>
+<p class="p1"><span class="s1"># - koi_prad: planet radius (Earth radii)</span></p>
+<p class="p1"><span class="s1"># Optional/derived observational proxies:</span></p>
+<p class="p1"><span class="s1"># - transit_depth_ppm: transit depth in parts per million (can derive from (Rp/Rs)^2)</span></p>
+<p class="p1"><span class="s1"># - h2o_feature_depth: strength of water absorption feature in transit/emission spectrum (ppm)</span></p>
+<p class="p1"><span class="s1"># - albedo: Bond albedo estimate (0-1), optional; default ~0.3</span></p>
+<p class="p1"><span class="s1"># - phase_amp_ppm: phase curve amplitude (ppm), optional</span></p>
+<p class="p1"><span class="s1">#</span></p>
+<p class="p1"><span class="s1"># If your CSV doesn’t have some of these, see derivations below.</span></p>
+<p class="p1"><span class="s1">df = pd.read_csv('exoplanet_data.csv')</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"># ===========================================</span></p>
+<p class="p1"><span class="s1"># 1) Derived quantities mimicking remote sensing</span></p>
+<p class="p1"><span class="s1"># ===========================================</span></p>
+<p class="p1"><span class="s1"># Constants</span></p>
+<p class="p1"><span class="s1">R_sun_in_m = 6.957e8</span></p>
+<p class="p1"><span class="s1">R_earth_in_m = 6.371e6</span></p>
+<p class="p1"><span class="s1">AU_in_m = 1.496e11</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"># Helper: safe get with default</span></p>
+<p class="p1"><span class="s1">def safe_col(name, default=np.nan):</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>return df[name] if name in df.columns else pd.Series(default, index=df.index)</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"># Pull raw columns (rename if your dataset differs)</span></p>
+<p class="p1"><span class="s1">T_star = safe_col('koi_steff')<span class="Apple-converted-space">                </span># K</span></p>
+<p class="p1"><span class="s1">R_star_solar = safe_col('koi_srad') <span class="Apple-converted-space">          </span># solar radii</span></p>
+<p class="p1"><span class="s1">a_AU = safe_col('koi_sma')<span class="Apple-converted-space">                    </span># AU</span></p>
+<p class="p1"><span class="s1">R_p_re = safe_col('koi_prad') <span class="Apple-converted-space">                </span># Earth radii</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"># Derived: stellar radius in meters, planet radius in meters</span></p>
+<p class="p1"><span class="s1">R_star_m = R_star_solar * R_sun_in_m</span></p>
+<p class="p1"><span class="s1">R_p_m = R_p_re * R_earth_in_m</span></p>
+<p class="p1"><span class="s1">a_m = a_AU * AU_in_m</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"># Bond albedo (if not provided); Earth-like ~0.3</span></p>
+<p class="p1"><span class="s1">albedo = safe_col('albedo', 0.3).clip(lower=0.0, upper=0.9)</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"># Equilibrium temperature Teq (zero greenhouse, full redistribution):</span></p>
+<p class="p1"><span class="s1"># Teq = T_star * sqrt(R_star / (2 a)) * (1 - A)^(1/4)</span></p>
+<p class="p1"><span class="s1">with np.errstate(divide='ignore', invalid='ignore'):</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>Teq = T_star * np.sqrt(R_star_m / (2.0 * a_m)) * np.power(1.0 - albedo, 0.25)</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"># Transit depth in ppm ~ (Rp/Rs)^2 * 1e6 (if not provided)</span></p>
+<p class="p1"><span class="s1">if 'transit_depth_ppm' in df.columns:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>transit_depth_ppm = df['transit_depth_ppm']</span></p>
+<p class="p1"><span class="s1">else:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>with np.errstate(divide='ignore', invalid='ignore'):</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>depth = (R_p_m / R_star_m) ** 2</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>transit_depth_ppm = (depth * 1e6)</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"># Placeholder spectral feature strength for water (ppm)</span></p>
+<p class="p1"><span class="s1"># If you have real spectral extraction, use that. Otherwise, we simulate:</span></p>
+<p class="p1"><span class="s1">if 'h2o_feature_depth' in df.columns:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>h2o_feature_depth = df['h2o_feature_depth']</span></p>
+<p class="p1"><span class="s1">else:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span># Simple proxy: atmospheric scale height signal scales with Rp and Teq for gas giants;</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span># add noise so it’s not deterministic. For small rocky planets, keep small.</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>rng = np.random.default_rng(42)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>base = np.where(R_p_re &gt; 2.0,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>30 + 0.05 * (Teq - 200).clip(lower=0),<span class="Apple-converted-space">  </span># larger for bigger/hotter</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>5 + 0.01 * (Teq - 200).clip(lower=0)) <span class="Apple-converted-space">  </span># tiny for small/cool</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>h2o_feature_depth = pd.Series(base + rng.normal(0, 5, size=len(df))).clip(lower=0)</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"># Optional phase curve amplitude proxy (ppm). Simulate if absent.</span></p>
+<p class="p1"><span class="s1">if 'phase_amp_ppm' in df.columns:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>phase_amp_ppm = df['phase_amp_ppm']</span></p>
+<p class="p1"><span class="s1">else:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>rng = np.random.default_rng(7)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>phase_amp_ppm = pd.Series(</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>(Teq.clip(lower=0) / 2000.0) * 100.0 + rng.normal(0, 10, len(df))</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>).clip(lower=0)</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"># ===========================================</span></p>
+<p class="p1"><span class="s1"># 2) Construct a target label: "water_detected"</span></p>
+<p class="p1"><span class="s1"># ===========================================</span></p>
+<p class="p1"><span class="s1"># Emulate a remote-sensing detection logic:</span></p>
+<p class="p1"><span class="s1"># - Need sufficient SNR: deeper transits or direct-imaging SNR proxy</span></p>
+<p class="p1"><span class="s1"># - Water feature above threshold</span></p>
+<p class="p1"><span class="s1"># - Temperature not extremely high/low (where H2O condenses out or dissociates)</span></p>
+<p class="p1"><span class="s1"># These thresholds are illustrative.</span></p>
+<p class="p1"><span class="s1">def water_detect_rule(row):</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>teq = row['Teq']</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>feat = row['h2o_feature_depth']</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>depth = row['transit_depth_ppm']</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span># Visibility/SNR proxy</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>snr_ok = (depth &gt;= 200) or (row['phase_amp_ppm'] &gt;= 50)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span># Feature threshold (ppm)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>feat_ok = feat &gt;= 20</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span># Temperature window where H2O can be present in detectable vapor form (very rough)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>temp_ok = (250 &lt;= teq &lt;= 1200)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>return int(snr_ok and feat_ok and temp_ok)</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">data = pd.DataFrame({</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>'Teq': Teq,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>'koi_prad': R_p_re,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>'koi_sma': a_AU,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>'koi_steff': T_star,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>'transit_depth_ppm': transit_depth_ppm,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>'h2o_feature_depth': h2o_feature_depth,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>'phase_amp_ppm': phase_amp_ppm,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>'albedo': albedo</span></p>
+<p class="p1"><span class="s1">})</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"># Drop rows with missing critical inputs</span></p>
+<p class="p1"><span class="s1">data = data.replace([np.inf, -np.inf], np.nan).dropna(subset=['Teq', 'koi_prad', 'koi_sma', 'koi_steff'])</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"># Create label</span></p>
+<p class="p1"><span class="s1">data['water_detected'] = data.apply(water_detect_rule, axis=1)</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"># ===========================================</span></p>
+<p class="p1"><span class="s1"># 3) Train/test split and model</span></p>
+<p class="p1"><span class="s1"># ===========================================</span></p>
+<p class="p1"><span class="s1">features = [</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>'Teq',</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>'koi_prad',</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>'koi_sma',</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>'koi_steff',</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>'transit_depth_ppm',</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>'h2o_feature_depth',</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>'phase_amp_ppm',</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>'albedo'</span></p>
+<p class="p1"><span class="s1">]</span></p>
+<p class="p1"><span class="s1">X = data[features]</span></p>
+<p class="p1"><span class="s1">y = data['water_detected']</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">X_train, X_test, y_train, y_test = train_test_split(</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>X, y, test_size=0.2, random_state=42, stratify=y if y.nunique() &gt; 1 else None</span></p>
+<p class="p1"><span class="s1">)</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">clf = DecisionTreeClassifier(max_depth=4, random_state=42)</span></p>
+<p class="p1"><span class="s1">clf.fit(X_train, y_train)</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">y_pred = clf.predict(X_test)</span></p>
+<p class="p1"><span class="s1">acc = accuracy_score(y_test, y_pred)</span></p>
+<p class="p1"><span class="s1">print(f"Accuracy: {acc:.2f}")</span></p>
+<p class="p1"><span class="s1">print("Class balance (train):", np.bincount(y_train))</span></p>
+<p class="p1"><span class="s1">print("\nReport:\n", classification_report(y_test, y_pred, digits=3))</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"># ===========================================</span></p>
+<p class="p1"><span class="s1"># 4) Inspect some predictions</span></p>
+<p class="p1"><span class="s1"># ===========================================</span></p>
+<p class="p1"><span class="s1">print("\nPrediction vs Actual (first 10):")</span></p>
+<p class="p1"><span class="s1">for i in range(min(10, len(X_test))):</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>print(f"Predicted: {y_pred[i]}, Actual: {y_test.iloc[i]}")</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"># ===========================================</span></p>
+<p class="p1"><span class="s1"># 5) Predict a new target (instrument-like inputs)</span></p>
+<p class="p1"><span class="s1"># ===========================================</span></p>
+<p class="p1"><span class="s1"># Example: Sun-like star, Earth-like orbit and radius, moderate H2O feature</span></p>
+<p class="p1"><span class="s1"># If you don’t know feature depths yet, you can start with small values (5–30 ppm).</span></p>
+<p class="p1"><span class="s1">example = {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>'koi_steff': 5778,<span class="Apple-converted-space">      </span># K</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>'koi_prad': 1.0,<span class="Apple-converted-space">        </span># Earth radii</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>'koi_sma': 1.0, <span class="Apple-converted-space">        </span># AU</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>'albedo': 0.3,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span># Compute Teq for this example:</span></p>
+<p class="p1"><span class="s1">}</span></p>
+<p class="p1"><span class="s1"># Compute Teq for example (R_star = 1 R_sun, a = 1 AU)</span></p>
+<p class="p1"><span class="s1">R_star_ex_m = 1.0 * R_sun_in_m</span></p>
+<p class="p1"><span class="s1">a_ex_m = 1.0 * AU_in_m</span></p>
+<p class="p1"><span class="s1">Teq_example = example['koi_steff'] * np.sqrt(R_star_ex_m / (2.0 * a_ex_m)) * (1.0 - example['albedo'])**0.25</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"># Transit depth for Earth-Sun: (Rp/Rs)^2 ~ (1 R_earth / 1 R_sun)^2 ~ 84 ppm</span></p>
+<p class="p1"><span class="s1">transit_depth_example = (R_earth_in_m / R_sun_in_m)**2 * 1e6<span class="Apple-converted-space">  </span># ~84 ppm</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"># Hypothetical spectral feature and phase curve amplitude (tunable)</span></p>
+<p class="p1"><span class="s1">example_vector = pd.DataFrame([{</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>'Teq': Teq_example,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>'koi_prad': example['koi_prad'],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>'koi_sma': example['koi_sma'],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>'koi_steff': example['koi_steff'],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>'transit_depth_ppm': transit_depth_example,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>'h2o_feature_depth': 25.0,<span class="Apple-converted-space">  </span># ppm, hypothetical detection strength</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>'phase_amp_ppm': 40.0,<span class="Apple-converted-space">      </span># ppm</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>'albedo': example['albedo']</span></p>
+<p class="p1"><span class="s1">}])</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">prediction = clf.predict(example_vector)[0]</span></p>
+<p class="p1"><span class="s1">prob = clf.predict_proba(example_vector)[0][prediction] if hasattr(clf, "predict_proba") else None</span></p>
+<p class="p1"><span class="s1">print("\nExample target:")</span></p>
+<p class="p1"><span class="s1">print(example_vector.round(2))</span></p>
+<p class="p1"><span class="s1">print("Water detected?", "Yes" if prediction == 1 else "No", f"(confidence ~{prob:.2f})" if prob is not None else "")</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"># ===========================================</span></p>
+<p class="p1"><span class="s1"># 6) Notes for real data integration</span></p>
+<p class="p1"><span class="s1"># ===========================================</span></p>
+<p class="p1"><span class="s1"># - Replace 'h2o_feature_depth' with a measured spectral feature depth from your reduction pipeline</span></p>
+<p class="p1"><span class="s1"># <span class="Apple-converted-space">  </span>(e.g., equivalent width or line depth near 1.4 μm H2O band).</span></p>
+<p class="p1"><span class="s1"># - If you have emission spectra for hot planets, include mid-IR bands and brightness temperatures.</span></p>
+<p class="p1"><span class="s1"># - Consider models more suitable than a simple tree (e.g., logistic regression or gradient boosting)</span></p>
+<p class="p1"><span class="s1"># <span class="Apple-converted-space">  </span>and perform cross-validation.</span></p>
+<p class="p1"><span class="s1"># - This is a classification of "water vapor detected in atmosphere" rather than mapping liquid water on the surface,</span></p>
+<p class="p1"><span class="s1"># <span class="Apple-converted-space">  </span>which is not currently observable.</span></p>
+</body>
+</html>
